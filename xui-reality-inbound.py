@@ -149,11 +149,17 @@ def has_port443(base, cookie, csrf):
     return False, None
 
 
-def build_inbound():
-    """ساخت payload اینباند — فقط مشخصات ثابت + کلیدهای تازه، بقیه پیش‌فرض پنل."""
-    priv, pub = gen_keypair()
-    short_id = gen_short_id()
-    client_id = str(uuid.uuid4())
+def build_inbound(priv=None, pub=None, short_id=None, client_id=None):
+    """ساخت payload اینباند.
+
+    اگر priv/pub/short_id داده شود (کلید مشترک از پنل اصلی)، همه پنل‌ها
+    همان کلید را می‌گیرند → «۴ تا در، ۱ قفل مشترک» — لینک روی همه کار می‌کند.
+    """
+    if not (priv and pub and short_id):
+        priv, pub = gen_keypair()
+        short_id = gen_short_id()
+    if not client_id:
+        client_id = str(uuid.uuid4())
 
     inbound = {
         "enable": True,
@@ -193,9 +199,58 @@ def build_inbound():
 
 def main():
     print(f"🔐 ساخت اینباند استاندارد (VLESS+Reality :{PORT} → {TARGET})\n" + "=" * 55)
+    print("🧬 حالت: کلید مشترک — همه پنل‌ها یک privateKey می‌گیرند (۴ در، ۱ قفل)\n")
+
+    # نام پنل اصلی (مرجع کلیدها) — از env یا اولین پنل
+    main_name = os.environ.get("MAIN_PANEL", "")
+    if not main_name:
+        main_name = next(iter(PANELS))
     results = {}
 
+    # ۱) ساخت/خواندن اینباند روی پنل اصلی → کلید مرجع
+    print(f"[{main_name}] (پنل اصلی — مرجع کلیدها)")
+    sess, csrf = login(PANELS[main_name])
+    if not sess:
+        print(f"  ❌ لاگین ناموفق — بدون مرجع کلید ادامه نمی‌دهم")
+        return 1
+    exists, ib = has_port443(PANELS[main_name], sess, csrf)
+    if exists:
+        rs = ib.get("streamSettings", {}).get("realitySettings", {})
+        master = {
+            "priv": rs.get("privateKey"),
+            "pub": rs.get("settings", {}).get("publicKey"),
+            "sid": (rs.get("shortIds") or [""])[0],
+        }
+        clients = ib.get("settings", {}).get("clients", [])
+        master["uuid"] = clients[0]["id"] if clients else str(uuid.uuid4())
+        print(f"  ⏭️ اینباند 443 از قبل هست — کلیدهایش مرجع شدند")
+    else:
+        print(f"  📡 ساخت اینباند مرجع...")
+        inbound, client_id, pub, short_id = build_inbound()
+        status, _, body = req(PANELS[main_name], "/managepanel/panel/api/inbounds/add",
+                              method="POST", data=inbound, cookie=sess, csrf=csrf)
+        if status != 200 or '"success":true' not in body:
+            print(f"  ❌ خطا ({status}): {body[:200]}")
+            return 1
+        rs = inbound["streamSettings"]["realitySettings"]
+        master = {
+            "priv": rs["privateKey"],
+            "pub": rs["settings"]["publicKey"],
+            "sid": short_id,
+            "uuid": client_id,
+        }
+        print(f"  ✅ اینباند مرجع ساخته شد! (UUID: {client_id})")
+    print(f"  🔑 PublicKey: {master['pub']}")
+    print(f"  🏷 ShortId: {master['sid']}")
+    results[main_name] = {"uuid": master["uuid"], "pub": master["pub"],
+                          "short_id": master["sid"],
+                          "address": PANELS[main_name].replace("https://", "")}
+    time.sleep(1)
+
+    # ۲) ساخت روی بقیه پنل‌ها با همان کلید مشترک
     for name, base in PANELS.items():
+        if name == main_name:
+            continue
         print(f"\n[{name}] لاگین...")
         sess, csrf = login(base)
         if not sess:
@@ -203,29 +258,37 @@ def main():
             continue
         print(f"  ✅ لاگین موفق")
 
-        # جلوگیری از اینباند تکراری 443
         exists, ib = has_port443(base, sess, csrf)
         if exists:
             print(f"  ⏭️ اینباند 443 از قبل هست (id={ib.get('id')} | {ib.get('remark')}) — رد شد")
+            # اگر هست ولی کلیدش فرق دارد، آپدیتش کن به کلید مشترک
+            rs = ib.get("streamSettings", {}).get("realitySettings", {})
+            if rs.get("settings", {}).get("publicKey") != master["pub"]:
+                print(f"  🔄 کلید اینباند با مرجع فرق دارد — هماهنگ می‌کنم...")
+                ib["streamSettings"]["realitySettings"]["privateKey"] = master["priv"]
+                ib["streamSettings"]["realitySettings"]["settings"]["publicKey"] = master["pub"]
+                ib["streamSettings"]["realitySettings"]["shortIds"] = [master["sid"]]
+                status, _, body = req(base, f"/managepanel/panel/api/inbounds/update/{ib.get('id')}",
+                                      method="POST", data=ib, cookie=sess, csrf=csrf)
+                ok = status == 200 and '"success":true' in body
+                print(f"  {'✅ هماهنگ شد!' if ok else '❌ ' + body[:120]}")
             results[name] = {"skipped": True, "inbound": ib}
             continue
 
-        print(f"  📡 ساخت اینباند VLESS+Reality :{PORT} → {TARGET} (fp={FINGERPRINT}) ...")
-        inbound, client_id, pub, short_id = build_inbound()
+        print(f"  📡 ساخت اینباند با کلید مشترک...")
+        inbound, client_id, pub, short_id = build_inbound(
+            priv=master["priv"], pub=master["pub"], short_id=master["sid"])
         status, _, body = req(base, "/managepanel/panel/api/inbounds/add",
                               method="POST", data=inbound, cookie=sess, csrf=csrf)
         if status == 200 and '"success":true' in body:
-            print(f"  ✅ اینباند ساخته شد!")
-            print(f"  🆔 UUID: {client_id}")
-            print(f"  🔑 PublicKey: {pub}")
-            print(f"  🏷 ShortId: {short_id}")
+            print(f"  ✅ اینباند ساخته شد! (کلید مشترک ✓)")
             results[name] = {"uuid": client_id, "pub": pub, "short_id": short_id,
                              "address": base.replace("https://", "")}
         else:
             print(f"  ❌ خطا ({status}): {body[:200]}")
         time.sleep(1)
 
-    print(f"\n{'=' * 55}\n📋 خلاصه:")
+    print(f"\n{'=' * 55}\n📋 خلاصه (همه با کلید مشترک):")
     for name, info in results.items():
         if info.get("skipped"):
             print(f"\n⏭️ {name}: اینباند از قبل بود")
