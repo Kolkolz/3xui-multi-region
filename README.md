@@ -127,6 +127,7 @@ curl -I https://دامنه.up.railway.app/managepanel/
 | `bootstrap.py` | خود-راه‌انداز داخل کانتینر (فقط با `BOOTSTRAP=1`) |
 | `xui-node-connector.py` | اتصال نودهای چند-ریجن به پنل مرکزی |
 | `xui-reality-inbound.py` | ساخت اینباند VLESS+Reality روی همه پنل‌ها |
+| `xui-link-maker.py` | ساخت لینک‌های اتصال درست (با TCP proxy) |
 | `xui-tcp-proxy-setup.py` | TCP proxy + روتیت به دامنه خوب + Host ها |
 | `run_all.sh` | **راه‌اندازی یک‌کلیک — همه مراحل پشت سر هم** |
 | `SETUP_NOTES.md` | **نکات کامل راه‌اندازی — حتماً بخوانید!** |
