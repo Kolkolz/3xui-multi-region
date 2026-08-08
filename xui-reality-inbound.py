@@ -55,6 +55,19 @@ SERVER_NAMES = [
 FINGERPRINT = "ios"
 REMARK = "VLESS-Reality-443"
 
+# نام لوکیشنی هر پنل — برای اینکه توی پنل/ساب اسم درست دیده شود
+# نام پنل (کلید PANELS) → اسم لوکیشن (پرچم + کشور + شهر)
+LOCATION_NAMES = {
+    "xui-nl":    "🇳🇱 Netherlands (Amsterdam)",
+    "xui-sg":    "🇸🇬 Singapore",
+    "xui-us-va": "🇺🇸 USA (Virginia)",
+    "xui-us-ca": "🇺🇸 USA (California)",
+}
+
+def location_name(name):
+    """اسم لوکیشنی پنل — اگر در نقشه نبود همان نام را برمی‌گرداند."""
+    return LOCATION_NAMES.get(name, name)
+
 USERNAME = os.environ.get("XUI_USERNAME", "admin")
 PASSWORD = os.environ.get("XUI_PASSWORD", "admin")
 
@@ -149,11 +162,12 @@ def has_port443(base, cookie, csrf):
     return False, None
 
 
-def build_inbound(priv=None, pub=None, short_id=None, client_id=None):
+def build_inbound(priv=None, pub=None, short_id=None, client_id=None, name=""):
     """ساخت payload اینباند.
 
     اگر priv/pub/short_id داده شود (کلید مشترک از پنل اصلی)، همه پنل‌ها
     همان کلید را می‌گیرند → «۴ تا در، ۱ قفل مشترک» — لینک روی همه کار می‌کند.
+    remark از location_name(name) گرفته می‌شود تا اسم لوکیشن در پنل/ساب دیده شود.
     """
     if not (priv and pub and short_id):
         priv, pub = gen_keypair()
@@ -163,7 +177,7 @@ def build_inbound(priv=None, pub=None, short_id=None, client_id=None):
 
     inbound = {
         "enable": True,
-        "remark": REMARK,
+        "remark": location_name(name) if name else REMARK,
         "listen": "",
         "port": PORT,
         "protocol": PROTOCOL,
@@ -226,7 +240,7 @@ def main():
         print(f"  ⏭️ اینباند 443 از قبل هست — کلیدهایش مرجع شدند")
     else:
         print(f"  📡 ساخت اینباند مرجع...")
-        inbound, client_id, pub, short_id = build_inbound()
+        inbound, client_id, pub, short_id = build_inbound(name=main_name)
         status, _, body = req(PANELS[main_name], "/managepanel/panel/api/inbounds/add",
                               method="POST", data=inbound, cookie=sess, csrf=csrf)
         if status != 200 or '"success":true' not in body:
@@ -277,7 +291,7 @@ def main():
 
         print(f"  📡 ساخت اینباند با کلید مشترک...")
         inbound, client_id, pub, short_id = build_inbound(
-            priv=master["priv"], pub=master["pub"], short_id=master["sid"])
+            priv=master["priv"], pub=master["pub"], short_id=master["sid"], name=name)
         status, _, body = req(base, "/managepanel/panel/api/inbounds/add",
                               method="POST", data=inbound, cookie=sess, csrf=csrf)
         if status == 200 and '"success":true' in body:
